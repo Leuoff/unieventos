@@ -1,0 +1,383 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TrackingMode {
+  QUANTITY
+  INDIVIDUAL
+}
+
+enum PhysicalState {
+  AVAILABLE
+  MAINTENANCE
+  LOST
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CANCELLED
+  COMPLETED
+}
+
+model Equipment {
+  id           String                 @id @default(uuid()) @db.Uuid
+  name         String                 @db.VarChar(120)
+  category     String                 @db.VarChar(80)
+  description  String                 @default("") @db.VarChar(2000)
+  location     String                 @db.VarChar(160)
+  searchText   String                 @default("")
+  trackingMode TrackingMode
+  total        Int
+  maintenance  Int                    @default(0)
+  lost         Int                    @default(0)
+  version      Int                    @default(1)
+  archivedAt   DateTime?              @db.Timestamptz(3)
+  createdAt    DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime               @updatedAt @db.Timestamptz(3)
+  units        EquipmentUnit[]
+  history      StockHistory[]
+  reservations Reservation[]
+  withdrawals  Withdrawal[]
+  eventNeeds   EventEquipmentNeed[]
+  requestItems EquipmentRequestItem[]
+
+  @@index([archivedAt, name, id])
+  @@index([category])
+}
+
+model EquipmentUnit {
+  id               String                     @id @default(uuid()) @db.Uuid
+  equipmentId      String                     @db.Uuid
+  assetNumber      String                     @unique @db.VarChar(80)
+  state            PhysicalState              @default(AVAILABLE)
+  equipment        Equipment                  @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  reservationUnits ReservationUnit[]
+  withdrawalUnits  WithdrawalUnit[]
+  settlementUnits  WithdrawalSettlementUnit[]
+
+  @@index([equipmentId])
+}
+
+model StockHistory {
+  id          String    @id @default(uuid()) @db.Uuid
+  equipmentId String    @db.Uuid
+  action      String    @db.VarChar(40)
+  description String
+  before      Json?
+  after       Json?
+  actorUserId String?   @db.Uuid
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+
+  @@index([equipmentId, createdAt, id])
+}
+
+// Compromisso por intervalo. Reservar não representa uma retirada física.
+model Reservation {
+  id            String                @id @default(uuid()) @db.Uuid
+  equipmentId   String                @db.Uuid
+  quantity      Int
+  startsAt      DateTime              @db.Timestamptz(3)
+  endsAt        DateTime              @db.Timestamptz(3)
+  status        ReservationStatus     @default(ACTIVE)
+  reference     String?               @db.VarChar(160)
+  requestItemId String?               @unique @db.Uuid
+  requestItem   EquipmentRequestItem? @relation(fields: [requestItemId], references: [id], onDelete: Restrict)
+  equipment     Equipment             @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  units         ReservationUnit[]
+  withdrawals   Withdrawal[]
+
+  @@index([equipmentId, status, startsAt, endsAt])
+}
+
+model ReservationUnit {
+  reservationId String        @db.Uuid
+  unitId        String        @db.Uuid
+  reservation   Reservation   @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  unit          EquipmentUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@id([reservationId, unitId])
+}
+
+model Withdrawal {
+  id               String                 @id @default(uuid()) @db.Uuid
+  equipmentId      String                 @db.Uuid
+  reservationId    String?                @db.Uuid
+  quantity         Int
+  returnedQuantity Int                    @default(0)
+  lostQuantity     Int                    @default(0)
+  responsibleName  String                 @default("") @db.VarChar(120)
+  destination      String                 @default("") @db.VarChar(160)
+  notes            String                 @default("") @db.VarChar(2000)
+  actorUserId      String?                @db.Uuid
+  expectedReturnAt DateTime?              @db.Timestamptz(3)
+  version          Int                    @default(1)
+  checklist        Json?
+  createdAt        DateTime               @default(now()) @db.Timestamptz(3)
+  equipment        Equipment              @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  reservation      Reservation?           @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  units            WithdrawalUnit[]
+  settlements      WithdrawalSettlement[]
+  history          MovementHistory[]
+
+  @@index([equipmentId])
+  @@index([reservationId])
+  @@index([expectedReturnAt, createdAt, id])
+}
+
+model WithdrawalUnit {
+  withdrawalId String        @db.Uuid
+  unitId       String        @db.Uuid
+  returnedAt   DateTime?     @db.Timestamptz(3)
+  lostAt       DateTime?     @db.Timestamptz(3)
+  withdrawal   Withdrawal    @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
+  unit         EquipmentUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@id([withdrawalId, unitId])
+}
+
+enum MovementCondition {
+  GOOD
+  DAMAGED
+  LOST
+}
+
+model WithdrawalSettlement {
+  id              String                     @id @default(uuid()) @db.Uuid
+  withdrawalId    String                     @db.Uuid
+  goodQuantity    Int                        @default(0)
+  damagedQuantity Int                        @default(0)
+  lostQuantity    Int                        @default(0)
+  actorUserId     String                     @db.Uuid
+  notes           String                     @default("") @db.VarChar(2000)
+  checklist       Json
+  createdAt       DateTime                   @default(now()) @db.Timestamptz(3)
+  withdrawal      Withdrawal                 @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
+  units           WithdrawalSettlementUnit[]
+
+  @@index([withdrawalId, createdAt, id])
+}
+
+model WithdrawalSettlementUnit {
+  settlementId String               @db.Uuid
+  unitId       String               @db.Uuid
+  condition    MovementCondition
+  settlement   WithdrawalSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  unit         EquipmentUnit        @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@id([settlementId, unitId])
+  @@index([unitId])
+}
+
+model MovementHistory {
+  id           String     @id @default(uuid()) @db.Uuid
+  withdrawalId String     @db.Uuid
+  action       String     @db.VarChar(40)
+  description  String
+  actorUserId  String?    @db.Uuid
+  before       Json?
+  after        Json?
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  withdrawal   Withdrawal @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
+
+  @@index([withdrawalId, createdAt, id])
+}
+
+enum CalendarEventStatus {
+  PLANNED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum CalendarEventKind {
+  INTERNAL
+  EXTERNAL
+}
+
+model CalendarEvent {
+  id              String               @id @default(uuid()) @db.Uuid
+  title           String               @db.VarChar(160)
+  description     String               @db.VarChar(4000)
+  department      String               @db.VarChar(40)
+  responsibleName String               @db.VarChar(120)
+  contact         String               @db.VarChar(160)
+  location        String               @db.VarChar(160)
+  locationKey     String
+  searchText      String
+  kind            CalendarEventKind
+  status          CalendarEventStatus  @default(PLANNED)
+  startsAt        DateTime             @db.Timestamptz(3)
+  endsAt          DateTime             @db.Timestamptz(3)
+  version         Int                  @default(1)
+  archivedAt      DateTime?            @db.Timestamptz(3)
+  createdAt       DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(3)
+  // Populado somente por uma futura camada autenticada. Responsável acima é declarado.
+  createdByUserId String?              @db.Uuid
+  equipmentNeeds  EventEquipmentNeed[]
+  history         EventHistory[]
+  requests        EquipmentRequest[]
+
+  @@index([archivedAt, startsAt, id])
+  @@index([locationKey, startsAt, endsAt])
+  @@index([department, status])
+}
+
+// Necessidade preliminar: não é uma reserva, solicitação aprovada ou movimento.
+model EventEquipmentNeed {
+  id           String                 @id @default(uuid()) @db.Uuid
+  eventId      String                 @db.Uuid
+  equipmentId  String                 @db.Uuid
+  quantity     Int
+  notes        String                 @default("") @db.VarChar(1000)
+  event        CalendarEvent          @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  equipment    Equipment              @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  requestItems EquipmentRequestItem[]
+
+  @@unique([eventId, equipmentId])
+  @@index([equipmentId])
+}
+
+model EventHistory {
+  id          String        @id @default(uuid()) @db.Uuid
+  eventId     String        @db.Uuid
+  action      String        @db.VarChar(40)
+  description String
+  before      Json?
+  after       Json?
+  actorUserId String?       @db.Uuid
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  event       CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@index([eventId, createdAt, id])
+}
+
+enum EquipmentRequestStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REFUSED
+  CANCELLED
+}
+
+model EquipmentRequest {
+  id               String                 @id @default(uuid()) @db.Uuid
+  eventId          String                 @db.Uuid
+  responsibleName  String                 @db.VarChar(120)
+  notes            String                 @default("") @db.VarChar(2000)
+  startsAt         DateTime               @db.Timestamptz(3)
+  endsAt           DateTime               @db.Timestamptz(3)
+  status           EquipmentRequestStatus @default(DRAFT)
+  version          Int                    @default(1)
+  searchText       String                 @default("")
+  // Chave idempotente da importação; nunca duplica as necessidades preliminares.
+  importedEventKey String?                @unique @db.Uuid
+  createdByUserId  String?                @db.Uuid
+  createdAt        DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime               @updatedAt @db.Timestamptz(3)
+  event            CalendarEvent          @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  items            EquipmentRequestItem[]
+  history          RequestHistory[]
+
+  @@index([status, createdAt, id])
+  @@index([eventId])
+  @@index([startsAt, endsAt])
+}
+
+model EquipmentRequestItem {
+  id           String              @id @default(uuid()) @db.Uuid
+  requestId    String              @db.Uuid
+  equipmentId  String              @db.Uuid
+  quantity     Int
+  notes        String              @default("") @db.VarChar(1000)
+  sourceNeedId String?             @db.Uuid
+  request      EquipmentRequest    @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  equipment    Equipment           @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  sourceNeed   EventEquipmentNeed? @relation(fields: [sourceNeedId], references: [id], onDelete: SetNull)
+  reservation  Reservation?
+
+  @@unique([requestId, equipmentId])
+  @@index([equipmentId])
+  @@index([sourceNeedId])
+}
+
+model RequestHistory {
+  id          String           @id @default(uuid()) @db.Uuid
+  requestId   String           @db.Uuid
+  action      String           @db.VarChar(40)
+  description String
+  before      Json?
+  after       Json?
+  actorUserId String?          @db.Uuid
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  request     EquipmentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+
+  @@index([requestId, createdAt, id])
+}
+
+enum UserRole {
+  ADMIN
+  MULTIMEIOS
+  MARKETING
+  EXTENSAO
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String       @db.VarChar(120)
+  email        String       @unique @db.VarChar(254)
+  passwordHash String       @db.VarChar(256)
+  role         UserRole
+  department   String?      @db.VarChar(40)
+  active       Boolean      @default(true)
+  permissions  String[]     @default([])
+  version      Int          @default(1)
+  authVersion  Int          @default(1)
+  createdAt    DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @db.Timestamptz(3)
+  sessions     AppSession[]
+  auditLogs    AuditLog[]
+
+  @@index([active, role])
+}
+
+model AppSession {
+  id          String    @id @default(uuid()) @db.Uuid
+  tokenHash   String    @unique @db.VarChar(64)
+  userId      String    @db.Uuid
+  authVersion Int
+  expiresAt   DateTime  @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, revokedAt, expiresAt])
+}
+
+model LoginThrottle {
+  key          String   @id @db.VarChar(64)
+  attempts     Int      @default(0)
+  windowEndsAt DateTime @db.Timestamptz(3)
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String   @db.VarChar(80)
+  entityType  String   @db.VarChar(80)
+  entityId    String?  @db.Uuid
+  description String
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  actor       User?    @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([actorUserId, createdAt, id])
+  @@index([entityType, entityId, createdAt])
+}
